@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fastener Spec Agent</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Fastener Spec Agent</h1>
+    <p class="tagline">Metric hex fastener specs from a Sanity Knowledge Base, via MCP.</p>
+  </header>
+
+  <main>
+    <section id="chat" class="chat" aria-live="polite"></section>
+
+    <section class="chips" aria-label="Example questions">
+      <button class="chip" data-q="What spanner do I need for an M12 hex set screw?">Spanner for M12 hex set screw?</button>
+      <button class="chip" data-q="Is a DIN 933 M22 interchangeable with ISO 4017?">DIN 933 M22 vs ISO 4017?</button>
+      <button class="chip" data-q="What's the head height of an M16 set screw?">Head height of M16 set screw?</button>
+      <button class="chip" data-q="Is DIN 933 still a current standard?">Is DIN 933 still current?</button>
+    </section>
+
+    <form id="composer" class="composer" autocomplete="off">
+      <textarea id="input" rows="2" placeholder="Ask about DIN 933, ISO 4017, hex nuts, washers…" required></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
