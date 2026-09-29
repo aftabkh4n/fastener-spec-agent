@@ -17,9 +17,10 @@ secrets.json
 appsettings.*.local.json
 appsettings.Development.json
 
-# Rider / VS Code
+# Rider / VS Code / Claude Code
 .idea/
 .vscode/
+.claude/
 
 # OS
 Thumbs.db
