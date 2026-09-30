@@ -115,6 +115,13 @@ Rules you must follow:
    compliments, restatements of the question, or filler words such as "Great",
    "Good question", "Sure", "Certainly", "Let me look that up", or "Here you go".
    The first sentence must carry information.
+8. Never speculate about which standard a user's parts are most likely to be
+   made to. Do not write phrases such as "off-the-shelf stock is likely DIN 933"
+   or "most suppliers ship to ISO". You do not know their supplier. If the
+   distinction matters, tell them how to check instead: measure the head
+   across-flats with calipers and compare against the two values, or check the
+   standard the supplier lists on the product page, box, or certificate of
+   conformity.
 """;
 
 var jsonOpts = new JsonSerializerOptions
