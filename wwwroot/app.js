@@ -12,67 +12,129 @@ function el(tag, className, text) {
   return e;
 }
 
-function renderMessage(role, text, toolCalls) {
-  const wrap = el("div", `msg ${role}`);
-  wrap.appendChild(el("div", "body", text));
-
-  if (toolCalls && toolCalls.length) {
-    const details = document.createElement("details");
-    details.className = "tools";
-    const summary = document.createElement("summary");
-    summary.textContent = `Looked up ${toolCalls.length} source${toolCalls.length > 1 ? "s" : ""}`;
-    details.appendChild(summary);
-    const list = document.createElement("ol");
-    for (const t of toolCalls) {
-      const li = document.createElement("li");
-      const code = el("code", null, t.name);
-      li.appendChild(code);
-      if (t.args) {
-        li.appendChild(document.createTextNode(" "));
-        const small = el("span", "args", t.args);
-        li.appendChild(small);
-      }
-      list.appendChild(li);
-    }
-    details.appendChild(list);
-    wrap.appendChild(details);
-  }
-
+function renderUser(text) {
+  const wrap = el("div", "msg user");
+  wrap.textContent = text;
   chatEl.appendChild(wrap);
   wrap.scrollIntoView({ behavior: "smooth", block: "end" });
-  return wrap;
+}
+
+function createAssistantSlot() {
+  const wrap = el("div", "msg assistant");
+  const body = el("div", "body", "");
+  wrap.appendChild(body);
+  chatEl.appendChild(wrap);
+  wrap.scrollIntoView({ behavior: "smooth", block: "end" });
+  return { wrap, body };
+}
+
+function updateToolCalls(wrap, toolCalls) {
+  let details = wrap.querySelector("details.tools");
+  if (!details) {
+    details = document.createElement("details");
+    details.className = "tools";
+    details.appendChild(el("summary"));
+    details.appendChild(document.createElement("ol"));
+    wrap.appendChild(details);
+  }
+  details.querySelector("summary").textContent =
+    `Looked up ${toolCalls.length} source${toolCalls.length > 1 ? "s" : ""}`;
+  const list = details.querySelector("ol");
+  list.innerHTML = "";
+  for (const t of toolCalls) {
+    const li = document.createElement("li");
+    li.appendChild(el("code", null, t.name));
+    if (t.args) {
+      li.appendChild(document.createTextNode(" "));
+      li.appendChild(el("span", "args", t.args));
+    }
+    list.appendChild(li);
+  }
 }
 
 async function send(question) {
   input.value = "";
   sendBtn.disabled = true;
 
-  renderMessage("user", question);
+  renderUser(question);
   history.push({ role: "user", content: question });
 
-  const thinking = renderMessage("assistant thinking", "Thinking…");
+  const { wrap, body } = createAssistantSlot();
+  body.textContent = "Thinking…";
+  body.classList.add("thinking-inline");
+
+  const toolCalls = [];
+  let full = "";
+  let started = false;
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream"
+      },
       body: JSON.stringify({ messages: history })
     });
 
     if (!res.ok) {
       const text = await res.text();
-      thinking.remove();
-      renderMessage("error", `Request failed (${res.status}): ${text}`);
+      wrap.classList.add("error");
+      body.textContent = `Request failed (${res.status}): ${text}`;
       return;
     }
 
-    const data = await res.json();
-    thinking.remove();
-    renderMessage("assistant", data.answer || "(empty response)", data.toolCalls || []);
-    history.push({ role: "assistant", content: data.answer || "" });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!raw.trim()) continue;
+
+        let ev = "message";
+        let data = "";
+        for (const line of raw.split("\n")) {
+          if (line.startsWith("event: ")) ev = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (!data) continue;
+        let payload;
+        try { payload = JSON.parse(data); } catch { continue; }
+
+        if (ev === "text") {
+          if (!started) {
+            started = true;
+            body.textContent = "";
+            body.classList.remove("thinking-inline");
+          }
+          full += payload.delta || "";
+          body.textContent = full;
+          wrap.scrollIntoView({ block: "end" });
+        } else if (ev === "tool") {
+          toolCalls.push(payload);
+          updateToolCalls(wrap, toolCalls);
+          if (!started) body.textContent = "Looking up sources…";
+        } else if (ev === "error") {
+          wrap.classList.add("error");
+          body.textContent = `Error: ${payload.message}`;
+        } else if (ev === "done") {
+          // final flush
+        }
+      }
+    }
+
+    if (full) history.push({ role: "assistant", content: full });
   } catch (err) {
-    thinking.remove();
-    renderMessage("error", `Network error: ${err.message}`);
+    wrap.classList.add("error");
+    body.textContent = `Network error: ${err.message}`;
   } finally {
     sendBtn.disabled = false;
     input.focus();

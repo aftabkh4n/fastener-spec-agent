@@ -51,16 +51,31 @@ Clone this repository, then from the project root:
 dotnet restore
 ```
 
-Store secrets with `dotnet user-secrets` (do not commit them):
+The MCP endpoint URL is baked in as a default:
+
+```
+https://api.sanity.io/v1/context/organizations/o31vwgtu4/mcp/fastener-spec-kb
+```
+
+Override it with `SANITY_CONTEXT_URL` if you point at a different endpoint.
+
+Store the token and Anthropic key with `dotnet user-secrets` (do not commit them):
 
 ```bash
 dotnet user-secrets init
-dotnet user-secrets set "SANITY_CONTEXT_URL" "https://api.sanity.io/v1/context/organizations/YOUR_ORG_ID/mcp/YOUR_MCP_NAME"
-dotnet user-secrets set "SANITY_CONTEXT_TOKEN" "sk_your_org_context_viewer_token"
-dotnet user-secrets set "ANTHROPIC_API_KEY" "sk-ant-your-key"
+dotnet user-secrets set "SANITY_API_READ_TOKEN" "sk_your_org_context_viewer_token"
+dotnet user-secrets set "ANTHROPIC_API_KEY"     "sk-ant-your-key"
 ```
 
-Or set them as environment variables of the same names.
+Or set them as environment variables of the same names. `SANITY_CONTEXT_TOKEN`
+is also accepted as an alias for backward compatibility.
+
+If you do not yet have a Sanity token, create a **Context Viewer** organization
+token at:
+<https://www.sanity.io/organizations/o31vwgtu4/api/tokens>
+
+A project-scoped token will be rejected by the endpoint with
+`403 contextGrantRequired`.
 
 Optional — change the model in `appsettings.json`:
 
@@ -99,7 +114,9 @@ grounded the reply.
 
 ## API
 
-`POST /api/chat`
+`POST /api/chat` — **streaming** Server-Sent Events response.
+
+Request:
 
 ```json
 {
@@ -109,15 +126,20 @@ grounded the reply.
 }
 ```
 
-Response:
+Response is `text/event-stream` with three event types:
 
-```json
-{
-  "answer": "...",
-  "toolCalls": [
-    { "name": "knowledge_base_search", "args": "{\"query\":\"M12 hex set screw across flats\"}" }
-  ]
-}
+```
+event: tool
+data: {"name":"groq_query","args":"{\"query\":\"*[_type == 'fastener' && ...]\"}"}
+
+event: text
+data: {"delta":"For an M12"}
+
+event: text
+data: {"delta":" hex set screw, use "}
+
+event: done
+data: {}
 ```
 
 `GET /api/tools` — lists MCP tools discovered at startup.
@@ -138,9 +160,14 @@ wwwroot/                   Static chat page (no framework)
   spanner size comes back through the MCP call chain. Search the code — there
   are no numbers.
 - **Tool loop.** `Microsoft.Extensions.AI`'s `FunctionInvokingChatClient`
-  handles the tool loop automatically with `MaximumIterationsPerRequest = 8`.
-  Tool calls are extracted from `ChatResponse.Messages` after the run and
-  returned to the UI for transparency.
+  handles the tool loop automatically with `MaximumIterationsPerRequest = 10`.
+  Tool calls are surfaced to the UI as `event: tool` frames as they happen.
+- **Streaming.** The endpoint uses `IChatClient.GetStreamingResponseAsync` and
+  emits SSE frames as the model produces text. Tool invocations are interleaved
+  with text deltas in the same stream.
+- **Lifecycle.** The MCP client is held as a singleton and disposed on
+  `ApplicationStopping` — one persistent HTTP-streamable connection for the app
+  lifetime, closed cleanly on shutdown.
 - **System prompt.** Enforces "check KB first", "flag DIN/ISO divergence",
   "note withdrawn standards", "cite sources", "admit gaps".
 
@@ -151,6 +178,26 @@ wwwroot/                   Static chat page (no framework)
 | `Anthropic` | 12.51.0 | Official Claude .NET SDK |
 | `Microsoft.Extensions.AI` | 10.10.0 | `IChatClient`, function-invoking pipeline |
 | `ModelContextProtocol` | 2.2.0 | Official MCP C# SDK (HTTP streamable client) |
+
+## Troubleshooting the MCP connection
+
+If the app fails to start with an MCP error, isolate it from the app code
+with a one-off request:
+
+```bash
+curl -X POST https://api.sanity.io/v1/context/organizations/o31vwgtu4/mcp/fastener-spec-kb \
+  -H "Authorization: Bearer $SANITY_API_READ_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+- `401` — token missing or invalid
+- `403 contextGrantRequired` — token is a project token; use an organization
+  token with the Context Viewer role
+- `400` / `406` — headers missing (both `Content-Type` and `Accept` are
+  required by the streamable-HTTP transport)
+- anything else — recheck the URL
 
 ## License
 

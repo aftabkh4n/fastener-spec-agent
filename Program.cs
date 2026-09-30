@@ -10,12 +10,21 @@ builder.Configuration
     .AddUserSecrets<Program>(optional: true)
     .AddEnvironmentVariables();
 
-string mcpUrl = builder.Configuration["SANITY_CONTEXT_URL"]
-    ?? throw new InvalidOperationException("SANITY_CONTEXT_URL not configured. Set via user-secrets or env var.");
-string mcpToken = builder.Configuration["SANITY_CONTEXT_TOKEN"]
-    ?? throw new InvalidOperationException("SANITY_CONTEXT_TOKEN not configured. Set via user-secrets or env var.");
+const string DefaultMcpUrl =
+    "https://api.sanity.io/v1/context/organizations/o31vwgtu4/mcp/fastener-spec-kb";
+
+string mcpUrl = builder.Configuration["SANITY_CONTEXT_URL"] ?? DefaultMcpUrl;
+
+string mcpToken = builder.Configuration["SANITY_API_READ_TOKEN"]
+    ?? builder.Configuration["SANITY_CONTEXT_TOKEN"]
+    ?? throw new InvalidOperationException(
+        "Sanity API read token missing. Set SANITY_API_READ_TOKEN via user-secrets or env var. " +
+        "Create a Context Viewer token at " +
+        "https://www.sanity.io/organizations/o31vwgtu4/api/tokens");
+
 string anthropicKey = builder.Configuration["ANTHROPIC_API_KEY"]
     ?? throw new InvalidOperationException("ANTHROPIC_API_KEY not configured. Set via user-secrets or env var.");
+
 string model = builder.Configuration["Anthropic:Model"] ?? "claude-sonnet-4-6";
 
 var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
@@ -48,14 +57,13 @@ IChatClient chatClient = anthropic.AsIChatClient(model)
     .AsBuilder()
     .UseFunctionInvocation(configure: c =>
     {
-        c.MaximumIterationsPerRequest = 8;
+        c.MaximumIterationsPerRequest = 10;
     })
     .Build();
 
 builder.Services.AddSingleton(mcpClient);
 builder.Services.AddSingleton<IReadOnlyList<AITool>>(aiTools);
 builder.Services.AddSingleton(chatClient);
-builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
@@ -64,6 +72,19 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 });
 
 var app = builder.Build();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    try
+    {
+        mcpClient.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        startupLogger.LogInformation("MCP client closed.");
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogWarning(ex, "Error closing MCP client");
+    }
+});
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -92,12 +113,24 @@ Rules you must follow:
    are the standard symbols.
 """;
 
+var jsonOpts = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+};
+
 app.MapPost("/api/chat", async (
+    HttpContext http,
     ChatRequestDto req,
     IChatClient chat,
     IReadOnlyList<AITool> tools,
     CancellationToken ct) =>
 {
+    http.Response.Headers.ContentType = "text/event-stream";
+    http.Response.Headers.CacheControl = "no-cache";
+    http.Response.Headers["X-Accel-Buffering"] = "no";
+    http.Response.StatusCode = 200;
+
     var messages = new List<ChatMessage>
     {
         new(ChatRole.System, SystemPrompt)
@@ -120,34 +153,53 @@ app.MapPost("/api/chat", async (
         MaxOutputTokens = 2048
     };
 
-    var response = await chat.GetResponseAsync(messages, options, ct);
+    var seenCalls = new HashSet<string>();
 
-    var toolCalls = new List<ToolCallDto>();
-    foreach (var msg in response.Messages)
+    async Task WriteEvent(string ev, object payload)
     {
-        foreach (var content in msg.Contents)
-        {
-            if (content is FunctionCallContent fc)
-            {
-                string args = string.Empty;
-                if (fc.Arguments is { Count: > 0 })
-                {
-                    try
-                    {
-                        args = JsonSerializer.Serialize(fc.Arguments);
-                    }
-                    catch
-                    {
-                        args = fc.Arguments.ToString() ?? string.Empty;
-                    }
-                }
-                if (args.Length > 240) args = args[..240] + "…";
-                toolCalls.Add(new ToolCallDto(fc.Name, args));
-            }
-        }
+        var json = JsonSerializer.Serialize(payload, jsonOpts);
+        await http.Response.WriteAsync($"event: {ev}\ndata: {json}\n\n", ct);
+        await http.Response.Body.FlushAsync(ct);
     }
 
-    return Results.Ok(new ChatResponseDto(response.Text ?? string.Empty, toolCalls));
+    try
+    {
+        await foreach (var update in chat.GetStreamingResponseAsync(messages, options, ct))
+        {
+            foreach (var content in update.Contents)
+            {
+                switch (content)
+                {
+                    case TextContent tc when !string.IsNullOrEmpty(tc.Text):
+                        await WriteEvent("text", new { delta = tc.Text });
+                        break;
+
+                    case FunctionCallContent fc:
+                        var key = fc.CallId ?? $"{fc.Name}:{Guid.NewGuid()}";
+                        if (!seenCalls.Add(key)) break;
+                        string args = string.Empty;
+                        if (fc.Arguments is { Count: > 0 })
+                        {
+                            try { args = JsonSerializer.Serialize(fc.Arguments); }
+                            catch { args = fc.Arguments.ToString() ?? string.Empty; }
+                        }
+                        if (args.Length > 240) args = args[..240] + "…";
+                        await WriteEvent("tool", new { name = fc.Name, args });
+                        break;
+                }
+            }
+        }
+
+        await WriteEvent("done", new { });
+    }
+    catch (OperationCanceledException)
+    {
+        // Client disconnected; end quietly.
+    }
+    catch (Exception ex)
+    {
+        await WriteEvent("error", new { message = ex.Message });
+    }
 });
 
 app.MapGet("/api/tools", (IReadOnlyList<AITool> tools) =>
@@ -159,5 +211,3 @@ await app.RunAsync();
 
 public record IncomingMessage(string Role, string Content);
 public record ChatRequestDto(List<IncomingMessage> Messages);
-public record ToolCallDto(string Name, string Args);
-public record ChatResponseDto(string Answer, List<ToolCallDto> ToolCalls);

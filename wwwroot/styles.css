@@ -81,7 +81,8 @@ main {
   border-color: #5a2a2a;
   color: #ffd0d0;
 }
-.msg.thinking {
+.msg.thinking,
+.thinking-inline {
   color: var(--muted);
   font-style: italic;
 }
