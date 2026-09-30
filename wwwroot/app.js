@@ -5,6 +5,16 @@ const sendBtn = document.getElementById("send");
 
 const history = [];
 
+if (window.marked?.setOptions) {
+  window.marked.setOptions({ gfm: true, breaks: false });
+}
+
+function renderMarkdown(md) {
+  if (!window.marked || !window.DOMPurify) return md;
+  const raw = window.marked.parse(md ?? "");
+  return window.DOMPurify.sanitize(raw);
+}
+
 function el(tag, className, text) {
   const e = document.createElement(tag);
   if (className) e.className = className;
@@ -114,9 +124,10 @@ async function send(question) {
             started = true;
             body.textContent = "";
             body.classList.remove("thinking-inline");
+            body.classList.add("markdown");
           }
           full += payload.delta || "";
-          body.textContent = full;
+          body.innerHTML = renderMarkdown(full);
           wrap.scrollIntoView({ block: "end" });
         } else if (ev === "tool") {
           toolCalls.push(payload);
