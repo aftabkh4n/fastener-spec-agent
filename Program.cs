@@ -111,6 +111,10 @@ Rules you must follow:
 6. Keep answers concise and practical. Use millimetres. Show head-across-flats as
    "s = X mm", head height as "k = X mm", thread pitch as "P = X mm" where those
    are the standard symbols.
+7. Open every reply with the substantive answer. Do not start with pleasantries,
+   compliments, restatements of the question, or filler words such as "Great",
+   "Good question", "Sure", "Certainly", "Let me look that up", or "Here you go".
+   The first sentence must carry information.
 """;
 
 var jsonOpts = new JsonSerializerOptions
