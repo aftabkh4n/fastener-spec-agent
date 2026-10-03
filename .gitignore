@@ -26,5 +26,9 @@ appsettings.Development.json
 Thumbs.db
 .DS_Store
 
+# Headless-browser probe sandbox
+.test/node_modules/
+.test/package-lock.json
+
 # Logs
 *.log
